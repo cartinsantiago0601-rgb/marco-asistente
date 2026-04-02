@@ -24,33 +24,50 @@ bot.command('start', async (ctx) => {
 bot.on('message:text', async (ctx) => {
   if (!isAllowed(ctx.from.id)) return ctx.reply('No tienes acceso a este bot.');
   await ctx.replyWithChatAction('typing');
-  const reply = await processMessage(ctx.from.id.toString(), ctx.message.text);
-  await sendReply(ctx, reply);
+  try {
+    const reply = await processMessage(ctx.from.id.toString(), ctx.message.text);
+    await sendReply(ctx, reply);
+  } catch (error: any) {
+    console.error('Error en message:text handler:', error);
+    await ctx.reply('Error procesando tu mensaje. Inténtalo de nuevo.');
+  }
 });
 
 bot.on('message:photo', async (ctx) => {
   if (!isAllowed(ctx.from.id)) return ctx.reply('No tienes acceso a este bot.');
   await ctx.replyWithChatAction('typing');
-  const imageUrl = await getPhotoUrl(ctx, token);
-  const caption = ctx.message.caption || '';
-  const reply = await processMessage(ctx.from.id.toString(), caption, imageUrl);
-  await sendReply(ctx, reply);
+  try {
+    const imageUrl = await getPhotoUrl(ctx, token);
+    const caption = ctx.message.caption || '';
+    const reply = await processMessage(ctx.from.id.toString(), caption, imageUrl);
+    await sendReply(ctx, reply);
+  } catch (error: any) {
+    console.error('Error en message:photo handler:', error);
+    await ctx.reply('Error procesando tu imagen. Inténtalo de nuevo.');
+  }
 });
 
 bot.catch((err) => {
   console.error('Error en el bot:', err.error);
 });
 
+// Grammy necesita init() antes de handleUpdate() en modo webhook
+let initialized = false;
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === 'POST') {
-    try {
-      await bot.handleUpdate(req.body);
-      res.status(200).json({ ok: true });
-    } catch (error) {
-      console.error('Error procesando webhook:', error);
-      res.status(200).json({ ok: true });
+  if (req.method !== 'POST') {
+    return res.status(200).json({ ok: true });
+  }
+
+  try {
+    if (!initialized) {
+      await bot.init();
+      initialized = true;
     }
-  } else {
+    await bot.handleUpdate(req.body);
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error('Error procesando webhook:', error);
     res.status(200).json({ ok: true });
   }
 }
