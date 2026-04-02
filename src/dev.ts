@@ -1,42 +1,32 @@
 import { Bot } from 'grammy';
-import { config } from './config.js';
+import { config, ALLOWED_USER_IDS } from './config.js';
 import { processMessage } from './agent.js';
-import { ALLOWED_USER_IDS } from './config.js';
+import { getPhotoUrl, sendReply } from './telegram.js';
 
 const bot = new Bot(config.TELEGRAM_BOT_TOKEN);
+
+function isAllowed(userId: number): boolean {
+  return ALLOWED_USER_IDS.length === 0 || ALLOWED_USER_IDS.includes(userId);
+}
 
 bot.command('start', async (ctx) => {
   await ctx.reply('MARCO activo (dev). Dispara.');
 });
 
 bot.on('message:text', async (ctx) => {
-  const userId = ctx.from.id;
-
-  if (ALLOWED_USER_IDS.length > 0 && !ALLOWED_USER_IDS.includes(userId)) {
-    await ctx.reply('No tienes acceso a este bot.');
-    return;
-  }
-
+  if (!isAllowed(ctx.from.id)) return ctx.reply('No tienes acceso a este bot.');
   await ctx.replyWithChatAction('typing');
+  const reply = await processMessage(ctx.from.id.toString(), ctx.message.text);
+  await sendReply(ctx, reply);
+});
 
-  const reply = await processMessage(userId.toString(), ctx.message.text);
-
-  if (reply.length <= 4096) {
-    try {
-      await ctx.reply(reply, { parse_mode: 'Markdown' });
-    } catch {
-      await ctx.reply(reply);
-    }
-  } else {
-    const chunks = reply.match(/[\s\S]{1,4096}/g) || [reply];
-    for (const chunk of chunks) {
-      try {
-        await ctx.reply(chunk, { parse_mode: 'Markdown' });
-      } catch {
-        await ctx.reply(chunk);
-      }
-    }
-  }
+bot.on('message:photo', async (ctx) => {
+  if (!isAllowed(ctx.from.id)) return ctx.reply('No tienes acceso a este bot.');
+  await ctx.replyWithChatAction('typing');
+  const imageUrl = await getPhotoUrl(ctx, config.TELEGRAM_BOT_TOKEN);
+  const caption = ctx.message.caption || '';
+  const reply = await processMessage(ctx.from.id.toString(), caption, imageUrl);
+  await sendReply(ctx, reply);
 });
 
 bot.catch((err) => {
