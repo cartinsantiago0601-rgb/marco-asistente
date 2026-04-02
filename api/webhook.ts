@@ -1,4 +1,4 @@
-import { Bot, webhookCallback } from 'grammy';
+import { Bot } from 'grammy';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { processMessage } from '../src/agent.js';
 
@@ -55,13 +55,17 @@ bot.catch((err) => {
 });
 
 // Handler para Vercel serverless
-const handle = webhookCallback(bot, 'std:http');
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  try {
-    await handle(req, res);
-  } catch (error) {
-    console.error('Error procesando webhook:', error);
+  if (req.method === 'POST') {
+    try {
+      const update = req.body;
+      await bot.handleUpdate(update);
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error('Error procesando webhook:', error);
+      res.status(200).json({ ok: true });
+    }
+  } else {
     res.status(200).json({ ok: true });
   }
 }
