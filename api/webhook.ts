@@ -1,73 +1,95 @@
-import { Bot } from 'grammy';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { processMessage } from '../src/agent.js';
-import { getPhotoUrl, sendReply } from '../src/telegram.js';
 
-const token = process.env.TELEGRAM_BOT_TOKEN!;
-if (!token) throw new Error('TELEGRAM_BOT_TOKEN no configurado');
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
+const TG = `https://api.telegram.org/bot${TOKEN}`;
 
-const bot = new Bot(token);
-
-const allowedIds = (process.env.TELEGRAM_ALLOWED_USER_IDS || '')
-  .split(',')
-  .map(id => parseInt(id.trim(), 10))
-  .filter(id => !isNaN(id));
-
-function isAllowed(userId: number): boolean {
-  return allowedIds.length === 0 || allowedIds.includes(userId);
+async function tgPost(method: string, body: object) {
+  const res = await fetch(`${TG}/${method}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return res.json();
 }
 
-bot.command('start', async (ctx) => {
-  await ctx.reply('MARCO activo. Dispara.');
-});
-
-bot.on('message:text', async (ctx) => {
-  if (!isAllowed(ctx.from.id)) return ctx.reply('No tienes acceso a este bot.');
-  await ctx.replyWithChatAction('typing');
-  try {
-    const reply = await processMessage(ctx.from.id.toString(), ctx.message.text);
-    await sendReply(ctx, reply);
-  } catch (error: any) {
-    console.error('Error en message:text handler:', error);
-    await ctx.reply('Error procesando tu mensaje. Inténtalo de nuevo.');
+async function sendMessage(chatId: number, text: string) {
+  const chunks = text.match(/[\s\S]{1,4096}/g) || [text];
+  for (const chunk of chunks) {
+    try {
+      const result = await tgPost('sendMessage', {
+        chat_id: chatId,
+        text: chunk,
+        parse_mode: 'Markdown',
+      }) as any;
+      if (!result.ok) {
+        // Reintentar sin Markdown si falla el parsing
+        await tgPost('sendMessage', { chat_id: chatId, text: chunk });
+      }
+    } catch (e) {
+      console.error('Error sendMessage:', e);
+    }
   }
-});
+}
 
-bot.on('message:photo', async (ctx) => {
-  if (!isAllowed(ctx.from.id)) return ctx.reply('No tienes acceso a este bot.');
-  await ctx.replyWithChatAction('typing');
+async function sendTyping(chatId: number) {
+  await tgPost('sendChatAction', { chat_id: chatId, action: 'typing' });
+}
+
+async function getFileUrl(fileId: string): Promise<string | undefined> {
   try {
-    const imageUrl = await getPhotoUrl(ctx, token);
-    const caption = ctx.message.caption || '';
-    const reply = await processMessage(ctx.from.id.toString(), caption, imageUrl);
-    await sendReply(ctx, reply);
-  } catch (error: any) {
-    console.error('Error en message:photo handler:', error);
-    await ctx.reply('Error procesando tu imagen. Inténtalo de nuevo.');
+    const data = await tgPost('getFile', { file_id: fileId }) as any;
+    if (data.ok && data.result?.file_path) {
+      return `https://api.telegram.org/file/bot${TOKEN}/${data.result.file_path}`;
+    }
+  } catch (e) {
+    console.error('Error getFile:', e);
   }
-});
-
-bot.catch((err) => {
-  console.error('Error en el bot:', err.error);
-});
-
-// Grammy necesita init() antes de handleUpdate() en modo webhook
-let initialized = false;
+  return undefined;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true });
   }
 
+  // Responder 200 a Telegram de inmediato para evitar reintentos
+  res.status(200).json({ ok: true });
+
   try {
-    if (!initialized) {
-      await bot.init();
-      initialized = true;
+    const update = req.body;
+    const message = update?.message;
+    if (!message) return;
+
+    const chatId: number = message.chat.id;
+    const userId: string = String(message.from?.id ?? chatId);
+    const text: string = message.text || '';
+
+    // Comando /start
+    if (text === '/start') {
+      await sendMessage(chatId, 'MARCO activo. Dispara.');
+      return;
     }
-    await bot.handleUpdate(req.body);
-    res.status(200).json({ ok: true });
-  } catch (error) {
-    console.error('Error procesando webhook:', error);
-    res.status(200).json({ ok: true });
+
+    // Mensaje de texto
+    if (text) {
+      await sendTyping(chatId);
+      const reply = await processMessage(userId, text);
+      await sendMessage(chatId, reply);
+      return;
+    }
+
+    // Foto
+    if (message.photo) {
+      await sendTyping(chatId);
+      const best = message.photo[message.photo.length - 1];
+      const imageUrl = await getFileUrl(best.file_id);
+      const caption: string = message.caption || '';
+      const reply = await processMessage(userId, caption, imageUrl);
+      await sendMessage(chatId, reply);
+      return;
+    }
+  } catch (error: any) {
+    console.error('Error procesando update:', error?.message || error);
   }
 }
