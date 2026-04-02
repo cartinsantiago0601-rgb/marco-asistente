@@ -1,37 +1,39 @@
 import { groq } from './llm.js';
-import { getMessages, addMessage } from './db.js';
-import { MARCO_SYSTEM_PROMPT } from './prompt.js';
+import { getMessages, addMessage, getNotes } from './db.js';
+import { MARCO_SYSTEM_PROMPT, buildDynamicContext, extractMemos, cleanMemos } from './prompt.js';
+import { addNote } from './db.js';
 
 const TEXT_MODEL = 'llama-3.3-70b-versatile';
-const VISION_MODEL = 'llama-4-scout-17b-16e-instruct';
+const VISION_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
 export async function processMessage(userId: string, text: string, imageUrl?: string): Promise<string> {
-  // Guardar mensaje del usuario (texto o descripción de imagen)
+  // Guardar mensaje del usuario
   await addMessage(userId, 'user', imageUrl ? `[Imagen enviada] ${text || ''}` : text);
 
-  // Obtener historial
-  const history = await getMessages(userId, 30);
+  // Obtener historial + notas en paralelo
+  const [history, notes] = await Promise.all([
+    getMessages(userId, 30),
+    getNotes(userId),
+  ]);
 
   const useVision = !!imageUrl;
 
-  // Construir mensajes
+  // Sistema: prompt base + contexto dinámico
+  const dynamicContext = buildDynamicContext(notes);
   const messages: any[] = [
     { role: 'system', content: MARCO_SYSTEM_PROMPT },
+    { role: 'system', content: dynamicContext },
   ];
 
-  // Añadir historial (siempre como texto)
+  // Historial previo (todo menos el último mensaje que acabamos de añadir)
   for (const msg of history.slice(0, -1)) {
     messages.push({ role: msg.role, content: msg.content });
   }
 
-  // Último mensaje del usuario: con imagen o solo texto
+  // Último mensaje: con imagen o solo texto
   if (useVision) {
     const content: any[] = [];
-    if (text) {
-      content.push({ type: 'text', text });
-    } else {
-      content.push({ type: 'text', text: 'Analiza esta imagen y dame tu diagnóstico o solución.' });
-    }
+    content.push({ type: 'text', text: text || 'Analiza esta imagen y dame tu diagnóstico o solución.' });
     content.push({ type: 'image_url', image_url: { url: imageUrl } });
     messages.push({ role: 'user', content });
   } else {
@@ -46,7 +48,16 @@ export async function processMessage(userId: string, text: string, imageUrl?: st
       max_tokens: 2048,
     });
 
-    const reply = completion.choices[0]?.message?.content || 'Sin respuesta.';
+    const rawReply = completion.choices[0]?.message?.content || 'Sin respuesta.';
+
+    // Extraer y guardar MEMOs antes de limpiar
+    const memos = extractMemos(rawReply);
+    if (memos.length > 0) {
+      await Promise.all(memos.map(memo => addNote(userId, memo.category, memo.content)));
+    }
+
+    // Limpiar MEMOs del texto visible
+    const reply = cleanMemos(rawReply);
 
     await addMessage(userId, 'assistant', reply);
     return reply;
